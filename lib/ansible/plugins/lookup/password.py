@@ -33,6 +33,13 @@ DOCUMENTATION = """
            - Note that the password is always stored as plain text, only the returning password is encrypted.
            - Encrypt also forces saving the salt value for idempotence.
            - Note that before 2.6 this option was incorrectly labeled as a boolean for a long time.
+      store_encrypted:
+        description:
+           - Store the generated password encrypted.
+           - If the password already exists and is not encrypted, encrypt it and store it encrypted.
+           - If store_encrypted is False and the password in the file is encrypted, decrypt it and store it in clear text.
+        default: False
+        type: bool
       ident:
         description:
           - Specify version of Bcrypt algorithm to be used while using O(encrypt) as V(bcrypt).
@@ -75,8 +82,8 @@ DOCUMENTATION = """
         would be to use Vault in playbooks.
         Read the documentation there and consider using it first,
         it will be more desirable for most applications.
-      - If the file already exists, no data will be written to it.
-        If the file has contents, those contents will be read in as the password.
+      - If the file already exists, no data will be written to it (except if store_encrypted is changed).
+        If the file has contents, those contents will be read in as the password (and decrypted if it is encrypted).
         Empty files cause the password to return as an empty string.
       - 'As all lookups, this runs on the Ansible host as the user running the playbook, and "become" does not apply,
         the target file must be readable by the playbook user, or, if it does not exist,
@@ -116,6 +123,10 @@ EXAMPLES = """
 - name: create random but idempotent password
   ansible.builtin.set_fact:
     password: "{{ lookup('ansible.builtin.password', '/dev/null', seed=inventory_hostname) }}"
+    +
+- name: create a password and store it encrypted
+  ansible.builtin.set_fact:
+    password: "web-{{ lookup('ansible.builtin.password', '/tmp/passwordfile store_encrypted=True') }}"
 """
 
 RETURN = """
@@ -135,13 +146,13 @@ from ansible.errors import AnsibleError, AnsibleAssertionError
 from ansible.module_utils.common.text.converters import to_bytes, to_native, to_text
 from ansible.module_utils.six import string_types
 from ansible.parsing.splitter import parse_kv
+from ansible.parsing.vault import is_encrypted
 from ansible.plugins.lookup import LookupBase
 from ansible.utils.encrypt import BaseHash, do_encrypt, random_password, random_salt
 from ansible.utils.path import makedirs_safe
 
 
-VALID_PARAMS = frozenset(('length', 'encrypt', 'chars', 'ident', 'seed'))
-
+VALID_PARAMS = frozenset(('length', 'encrypt', 'chars', 'ident', 'seed', 'store_encrypted'))
 
 def _read_password_file(b_path):
     """Read the contents of a password file and return it
@@ -336,7 +347,13 @@ class LookupModule(LookupBase):
         params['encrypt'] = params.get('encrypt', self.get_option('encrypt'))
         params['ident'] = params.get('ident', self.get_option('ident'))
         params['seed'] = params.get('seed', self.get_option('seed'))
-
+        params['store_encrypted'] = params.get('store_encrypted', self.get_option('store_encrypted'))
+        if params['store_encrypted'].lower() in ("true", "yes"):
+            params['store_encrypted'] = True
+        elif params['store_encrypted'].lower() in ("false", "no"):
+            params['store_encrypted'] = False
+        else:
+            raise ValueError("store_encrypted must be True or False but is '%s'" % params['store_encrypted'])
         params['chars'] = params.get('chars', self.get_option('chars'))
         if params['chars'] and isinstance(params['chars'], string_types):
             tmp_chars = []
@@ -368,6 +385,20 @@ class LookupModule(LookupBase):
                 first_process, lockfile = _get_lock(b_path)
 
                 content = _read_password_file(b_path)
+                store_encrypted = params['store_encrypted']
+
+                if content is not None and is_encrypted(content):
+                    if not store_encrypted:
+                        changed = True
+                try:
+                    content = self._loader._vault.decrypt(content).decode()
+                except AnsibleError as e:
+                    raise AnsibleError("A vault password or secret must be specified to decrypt %s" % to_native(b_path)) from e
+                finally:
+                    if first_process:
+                        _release_lock(lockfile)
+                    elif store_encrypted:
+                        changed = True
 
                 if content is None or b_path == to_bytes('/dev/null'):
                     plaintext_password = random_password(params['length'], chars, params['seed'])
@@ -399,6 +430,16 @@ class LookupModule(LookupBase):
 
                 if changed and b_path != to_bytes('/dev/null'):
                     content = _format_content(plaintext_password, salt, encrypt=encrypt, ident=ident)
+
+                    if store_encrypted:
+                        try:
+                            content = self._loader._vault.encrypt(content)
+                        except AnsibleError as e:
+                            raise AnsibleError("A vault password or secret must be specified to decrypt %s" % to_native(b_path)) from e
+                        finally:
+                            if first_process:
+                                _release_lock(lockfile)
+
                     _write_password_file(b_path, content)
 
             finally:
