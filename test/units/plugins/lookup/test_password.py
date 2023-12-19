@@ -575,3 +575,44 @@ class TestLookupModuleWithPasslibWrappedAlgo(BaseTestLookupModule):
             # generated with: echo test | mkpasswd -s --rounds 660000 -m sha-256 --salt testansiblepass.
             hashpw = '{CRYPT}$5$rounds=660000$testansiblepass.$KlRSdA3iFXoPI.dEwh7AixiXW3EtCkLrlQvlYA2sluD'
             self.assertTrue(wrapper.verify('test', hashpw))
+
+class TestPasswordLookupStoreEncrypted(unittest.TestCase):
+    @patch('ansible.plugins.lookup.password._read_password_file')
+    @patch('ansible.plugins.lookup.password._write_password_file')
+    def test_store_encrypted_true(self, mock_write, mock_read):
+        # Simulate an existing password file
+        mock_read.return_value = None
+
+        # Test parameters
+        terms = ["path/to/passwordfile store_encrypted=True"]
+        variables = {}
+        kwargs = {}
+
+        # Create an instance of the plugin
+        password_lookup = password.LookupModule()
+
+        # Execution
+        password_lookup.run(terms, variables, **kwargs)
+
+        # Verify that _write_password_file was called
+        self.assertTrue(mock_write.called)
+
+    @patch('ansible.plugins.lookup.password._read_password_file')
+    @patch('ansible.plugins.lookup.password._write_password_file')
+    def test_store_encrypted_false(self, mock_write, mock_read):
+        # Simulate an existing password file
+        mock_read.return_value = None
+
+        # Test parameters
+        terms = ["path/to/passwordfile store_encrypted=False"]
+        variables = {}
+        kwargs = {}
+
+        # Create an instance of the plugin
+        password_lookup = password.LookupModule()
+
+        # Execution
+        password_lookup.run(terms, variables, **kwargs)
+
+        # Verify that _write_password_file was called
+        self.assertTrue(mock_write.called)
